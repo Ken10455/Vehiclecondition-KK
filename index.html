@@ -21,10 +21,11 @@ button,input,select{font:inherit}button,select,input{min-height:46px;border:1px 
  <section class="panel controls" aria-label="路況查詢條件">
   <div class="tabs" role="group" aria-label="道路來源"><button data-mode="Freeway" aria-pressed="true">國道</button><button data-mode="Highway" aria-pressed="false">省道</button><button data-mode="City" aria-pressed="false">市區道路</button></div>
   <div class="filters"><label>路線／縣市<select id="scope"></select></label><label id="roadLabel" class="hide">道路<select id="road"><option value="">請選道路</option></select></label><label>行車方向<select id="direction"><option value="">請選方向</option></select></label><label>觀測點<select id="point"><option value="">載入資料後選擇</option></select></label></div>
-  <div class="tools"><button id="refresh" class="primary">更新路況</button><button id="geo" aria-pressed="false">開啟定位</button><button id="voice" aria-pressed="false">路況語音</button><button id="settings">TDX 設定</button><button id="demo">體驗示範</button></div>
-  <p class="small muted" style="margin-top:14px">請先選道路與方向。定位僅協助找出所選道路的附近設備，不會判定您所在車道或自動切換道路。</p>
+  <div class="tools"><button id="refresh" class="primary">更新路況</button><button id="geo" aria-pressed="false">開啟定位</button><button id="voice" aria-pressed="false">路況語音</button><button id="settings">TDX 設定</button><button id="auto" aria-pressed="false">自動選路：關</button></div>
+  <p class="small muted" style="margin-top:14px">開啟「自動選路」可依定位選擇國道路線、省道道路，或所選縣市內的道路；手動選路或方向會停止自動選路，定位仍保留。</p>
+  <p id="autoStatus" class="small muted" role="status" aria-live="polite">自動選路已關閉</p>
  </section>
- <div id="message" class="banner" role="status" aria-live="polite">設定 TDX 金鑰即可讀取路況，也可先體驗示範。</div>
+ <div id="message" class="banner" role="status" aria-live="polite">請先按「TDX 設定」輸入金鑰，再選擇道路或開啟自動選路。</div>
  <section class="panel" aria-label="車道觀測">
   <div class="statusrow"><span class="eyebrow">LANE SNAPSHOT / 單點觀測</span><span id="quality" class="pill">等待資料</span></div>
   <h2 id="context" class="context">選擇一處，查看各車道</h2><div id="subcontext" class="subcontext">各欄皆來自同一設備、同一 LinkID 的觀測。</div>
@@ -72,10 +73,23 @@ function normalize(statics,lives,interval,now){
 function quality(p,now=Date.now()){if(p.duplicate)return {ok:false,text:'車道資料重複'};if(p.status!==0)return {ok:false,text:p.status===null?'設備狀態未知':({1:'通訊異常',2:'停用／施工',3:'設備故障'}[p.status]||'設備異常')};if(p.time===null)return {ok:false,text:'資料時間未知'};if(p.time>now+60000)return {ok:false,text:'資料時間異常'};if(now-p.time>Math.max(180,p.interval*2.5)*1000)return {ok:false,text:'資料已過期'};return {ok:true,text:'資料有效'};}
 function comparable(p,now=Date.now()){return quality(p,now).ok&&![2].includes(p.det)&&p.roadClass!==7?p.lanes.filter(l=>l.eligible&&l.speed!==null&&!l.zeroUncertain):[]}
 function observed(p,now=Date.now()){const ls=comparable(p,now);return ls.length<2?null:Math.max(...ls.map(l=>l.speed))-Math.min(...ls.map(l=>l.speed))}
+const compass={N:0,NE:45,E:90,SE:135,S:180,SW:225,W:270,NW:315};
+function travelBearing(a,b){const r=Math.PI/180,x=(b.lon-a.lon)*r;return (Math.atan2(Math.sin(x)*Math.cos(b.lat*r),Math.cos(a.lat*r)*Math.sin(b.lat*r)-Math.sin(a.lat*r)*Math.cos(b.lat*r)*Math.cos(x))/r+360)%360}
+function chooseAuto(items,here,mode){
+ const routes=new Map();
+ for(const v of items||[]){if(number(v.DetectionType)===2||number(v.RoadClass)===7)continue;const parsed=fwy(v.VDID),road=mode==='Freeway'?parsed?.road:str(v.RoadName);if(!road)continue;const lat=number(v.PositionLat),lon=number(v.PositionLon);if(lat===null||lon===null||lat===0||lon===0)continue;const d=distance(here,{lat,lon});if(d>1)continue;
+  let item=routes.get(road);if(!item){item={road,d,dirs:new Set()};routes.set(road,item)}item.d=Math.min(item.d,d);for(const link of v.DetectionLinks||[]){const dir=str(link.RoadDirection);if(dir)item.dirs.add(dir)}
+ }
+ const list=[...routes.values()].sort((a,b)=>a.d-b.d);
+ if(!list.length)return {reason:'附近沒有足夠接近的設備；保留目前選擇'};
+ if(list[1]&&list[1].d-list[0].d<Math.max(.2,here.accuracy*2/1000))return {reason:'鄰近道路或高架重疊，暫不切換；可手動選路'};
+ const best=list[0];let dir='';if(here.heading!==null&&here.heading!==undefined){const dirs=[...best.dirs].filter(d=>d in compass).map(d=>({d,g:Math.abs((compass[d]-here.heading+540)%360-180)})).sort((a,b)=>a.g-b.g);if(dirs[0]?.g<=45&&(!dirs[1]||dirs[1].g-dirs[0].g>=25))dir=dirs[0].d}
+ return {road:best.road,dir};
+}
 const storage={get(k){try{return localStorage.getItem(NS+k)}catch{return null}},set(k,v){try{localStorage.setItem(NS+k,v);return true}catch{return false}},remove(k){try{localStorage.removeItem(NS+k)}catch{}}};
 // Pure functions above are also exercised by the offline regression checks.
 if(typeof document!=='undefined'){
-const $=id=>document.getElementById(id),state={mode:'Freeway',scope:'N5',road:'',dir:'',point:'',points:[],interval:60,received:0,version:0,controller:null,busy:false,paused:0,next:0,failures:0,token:'',expiry:0,credentials:null,demo:false,watch:null,here:null,geoError:'',voice:false,lastSpeech:0,lastEvent:'',follow:true};
+const $=id=>document.getElementById(id),state={mode:'Freeway',scope:'N5',road:'',dir:'',point:'',points:[],interval:60,received:0,version:0,controller:null,busy:false,paused:0,next:0,failures:0,token:'',expiry:0,credentials:null,autoOn:storage.get('auto')==='1',autoCandidate:null,autoIndex:null,autoIndexKey:'',autoText:'',watch:null,here:null,geoError:'',voice:false,lastSpeech:0,lastEvent:'',follow:true};
 const cache=new Map();
 function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function message(text,kind=''){const e=$('message');e.textContent=text;e.className='banner'+(kind?' '+kind:'')}
@@ -88,19 +102,20 @@ function positionValid(){return state.here&&Date.now()-state.here.time<30000&&st
 function locationText(){if(state.watch===null)return '未開啟；可手動選觀測點';if(state.geoError)return state.geoError;if(!state.here)return '定位中…';if(!positionValid())return '定位過期或精度不足；保留手動觀測';return '精度約 ±'+Math.round(state.here.accuracy)+' 公尺；不辨識所在車道'}
 function title(p){return (p.mile===null?p.id:p.mile.toFixed(1)+'K')+' · '+(DIR[p.dir]||p.dir)+' · '+p.id}
 function paint(){
+ autoStatus();
  $('location').textContent=locationText();const pts=selected();$('count').textContent=pts.length?' · '+pts.length+' 筆':'';
- if(state.follow&&positionValid()&&!state.demo){const near=pts.filter(p=>p.loc).map(p=>({p,d:distance(state.here,p.loc)})).sort((a,b)=>a.d-b.d);if(near[0]&&near[0].d<=1)state.point=near[0].p.key;}
+ if(state.follow&&positionValid()){const near=pts.filter(p=>p.loc).map(p=>({p,d:distance(state.here,p.loc)})).sort((a,b)=>a.d-b.d);if(near[0]&&near[0].d<=1)state.point=near[0].p.key;}
  if(!pts.some(p=>p.key===state.point))state.point=pts[0]?.key||'';
  options($('point'),pts.map(p=>[p.key,title(p)]),state.point,pts.length?null:'請先選道路與方向');const p=pts.find(p=>p.key===state.point);
  $('rows').replaceChildren();for(const row of pts){const tr=element('tr');if(row.key===state.point)tr.className='selected';tr.append(element('td',title(row)));tr.append(element('td',row.lanes.map(l=>'#'+(l.id+1)+' '+(l.speed===null?'—':Math.round(l.speed))).join(' / ')+' km/h'));tr.append(element('td',quality(row).text));const td=element('td'),button=element('button','查看');button.setAttribute('aria-label','查看 '+title(row));button.onclick=()=>{state.point=row.key;state.follow=false;paint()};td.append(button);tr.append(td);$('rows').append(tr)}
  $('lanes').replaceChildren();if(!p){$('context').textContent=state.points.length?'請選道路與方向':'選擇一處，查看各車道';$('subcontext').textContent='以單一設備及路段呈現，避免混合不同方向。';$('quality').textContent='等待選擇';$('quality').className='pill';$('collected').textContent='—';$('comparison').textContent='不將全部方向或不同道路合併平均。';$('lanes').append(element('div','尚無可顯示的觀測點。','empty'));return}
- const q=quality(p),demo=state.demo?'示範 · ':'';$('quality').textContent=demo+q.text;$('quality').className='pill '+(q.ok?'good':'warn');$('context').textContent=demo+routeText()+' · '+(DIR[p.dir]||p.dir);const d=positionValid()&&p.loc&&!state.demo?distance(state.here,p.loc):null;
+ const q=quality(p);$('quality').textContent=q.text;$('quality').className='pill '+(q.ok?'good':'warn');$('context').textContent=routeText()+' · '+(DIR[p.dir]||p.dir);const d=positionValid()&&p.loc?distance(state.here,p.loc):null;
  $('subcontext').textContent=(p.mile!==null?p.mile.toFixed(1)+'K · ':'')+p.id+' · Link '+p.link+(d!==null?' · 直線距離 '+d.toFixed(2)+' 公里（未確認同一道路）':'')+(p.det===2||p.roadClass===7?' · 匝道觀測':'');
  $('collected').textContent=p.time===null?'來源未提供':new Date(p.time).toLocaleString('zh-TW',{hour12:false})+' · '+Math.max(0,Math.floor((Date.now()-p.time)/60000))+' 分鐘前';
  for(const l of p.lanes){const card=element('div',undefined,'lane');card.append(element('div','車道 '+(l.id+1)+' · '+(LT[l.type]||'種類未知'),'name'));const speed=element('div',l.speed===null?'—':String(Math.round(l.speed)),'speed'+(q.ok&&l.speed!==null?' '+(l.speed>=70?'flow':l.speed>=40?'slow':'jam'):''));speed.append(element('span','km/h'));card.append(speed);const meta=[];if(l.volume!==null)meta.push(l.volume+' 輛');if(l.heavy!==null)meta.push('大車 '+Math.round(l.heavy)+'%');if(l.zeroUncertain)meta.push('零速／無車狀態待確認');if(!l.eligible)meta.push('不納入速度比較');if(!q.ok)meta.push(q.text);card.append(element('div',meta.join(' · ')||'流量未提供','meta'));$('lanes').append(card)}
  const spread=observed(p);$('comparison').textContent=spread===null?(q.ok?'適用且有效的車道不足，或屬匝道；不比較速度。':'資料品質不足，僅保留原觀測值供查閱。'):'此點適用車道的最大觀測差為 '+Math.round(spread)+' km/h。這不是換道後的預期收益。';
  $('comparison').textContent+=' 車道號依來源 LaneID + 1，由行車方向左至右；缺測車道不補造數值。';
- if(state.voice&&!state.demo&&positionValid()&&d!==null&&d<=.5&&q.ok){const ls=comparable(p),low=ls.length?Math.min(...ls.map(l=>l.speed)):null;const key=state.mode+'|'+state.scope+'|'+state.road+'|'+state.dir+'|'+p.key+'|slow';if(low!==null&&low<40&&key!==state.lastEvent&&Date.now()-state.lastSpeech>90000){speak('所選道路附近偵測點，觀測車速低於四十公里。請留意路況。');state.lastEvent=key;state.lastSpeech=Date.now()}}
+ if(state.voice&&positionValid()&&d!==null&&d<=.5&&q.ok){const ls=comparable(p),low=ls.length?Math.min(...ls.map(l=>l.speed)):null;const key=state.mode+'|'+state.scope+'|'+state.road+'|'+state.dir+'|'+p.key+'|slow';if(low!==null&&low<40&&key!==state.lastEvent&&Date.now()-state.lastSpeech>90000){speak('所選道路附近偵測點，觀測車速低於四十公里。請留意路況。');state.lastEvent=key;state.lastSpeech=Date.now()}}
 }
 function speak(text){if(!('speechSynthesis'in window))return;window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='zh-TW';window.speechSynthesis.speak(u)}
 function paths(snapshot,live=false){let path=(live?'/Live/VD/':'/VD/')+(snapshot.mode==='City'?'City/'+snapshot.scope:snapshot.mode);const query=new URLSearchParams({'$format':'JSON'});if(snapshot.mode==='Freeway')query.set('$filter',"contains(VDID,'"+snapshot.scope+"-')");return BASE+path+'?'+query}
@@ -109,31 +124,63 @@ async function token(signal){if(state.token&&Date.now()<state.expiry-30000)retur
 async function api(url,signal){for(let attempt=0;attempt<2;attempt++){const tk=await token(signal);try{return await request(url,{headers:{Authorization:'Bearer '+tk,Accept:'application/json'}},signal)}catch(e){if(e.status===401&&attempt===0){state.token='';continue}throw e}}}
 function stop(){state.version++;state.controller?.abort();state.busy=false;$('refresh').disabled=false}
 async function load(){
- if(state.demo){demo();return}if(state.busy)return;if(Date.now()<state.paused){message('來源要求暫停，'+new Date(state.paused).toLocaleTimeString('zh-TW')+' 後可重試。','warn');return}if(!state.credentials){message('請先設定 TDX 金鑰，或使用示範模式。');return}
+ if(state.busy)return;if(Date.now()<state.paused){message('來源要求暫停，'+new Date(state.paused).toLocaleTimeString('zh-TW')+' 後可重試。','warn');return}if(!state.credentials){message('請先按「TDX 設定」輸入金鑰。');return}
  const version=++state.version,snapshot={mode:state.mode,scope:state.scope},key=snapshot.mode+':'+snapshot.scope,controller=new AbortController();state.controller=controller;state.busy=true;$('refresh').disabled=true;message('正在取得 '+routeText()+' 的路況…');
- try{let c=cache.get(key);if(!c||Date.now()-c.time>86400000){const env=envelope(await api(paths(snapshot),controller.signal),'VDs');c={time:Date.now(),items:env.items};if(version!==state.version)return;cache.set(key,c)}const env=envelope(await api(paths(snapshot,true),controller.signal),'VDLives');if(version!==state.version)return;state.interval=env.interval>0?env.interval:(snapshot.mode==='Freeway'?60:300);state.points=normalize(c.items,env.items,state.interval,Date.now()).filter(p=>snapshot.mode!=='Freeway'||p.route===snapshot.scope);state.received=Date.now();state.failures=0;state.next=Date.now()+state.interval*1000;filters();paint();$('retrieved').textContent='最後取得 '+new Date(state.received).toLocaleTimeString('zh-TW')+' · 更新間隔 '+state.interval+' 秒';message(state.points.length?'已取得路況；請依資料時間與設備狀態閱讀。':'來源沒有可對應的設備／路段資料。請確認服務範圍或稍後重試。',state.points.length?'':'warn');}
+ try{
+ if(state.autoOn&&positionValid()){
+  const indexKey=snapshot.mode==='Freeway'?'Freeway:all':key;
+  let index=cache.get(indexKey);
+  if(snapshot.mode==='Freeway'&&(!index||Date.now()-index.time>86400000)){
+   index={time:Date.now(),items:envelope(await api(BASE+'/VD/Freeway?$format=JSON',controller.signal),'VDs').items};
+   if(version!==state.version)return;cache.set(indexKey,index);
+  }
+  if(index){state.autoIndex=index.items;state.autoIndexKey=indexKey}
+ }
+ let c=cache.get(key);if(!c||Date.now()-c.time>86400000){const env=envelope(await api(paths(snapshot),controller.signal),'VDs');c={time:Date.now(),items:env.items};if(version!==state.version)return;cache.set(key,c)}if(snapshot.mode!=='Freeway'){state.autoIndex=c.items;state.autoIndexKey=key}const env=envelope(await api(paths(snapshot,true),controller.signal),'VDLives');if(version!==state.version)return;state.interval=env.interval>0?env.interval:(snapshot.mode==='Freeway'?60:300);state.points=normalize(c.items,env.items,state.interval,Date.now()).filter(p=>snapshot.mode!=='Freeway'||p.route===snapshot.scope);state.received=Date.now();state.failures=0;state.next=Date.now()+state.interval*1000;filters();paint();$('retrieved').textContent='最後取得 '+new Date(state.received).toLocaleTimeString('zh-TW')+' · 更新間隔 '+state.interval+' 秒';message(state.points.length?'已取得路況；請依資料時間與設備狀態閱讀。':'來源沒有可對應的設備／路段資料。請確認服務範圍或稍後重試。',state.points.length?'':'warn');}
  catch(e){if(version!==state.version||controller.signal.aborted)return;state.failures++;const delay=Math.min(900000,30000*2**Math.min(state.failures,5));state.next=Date.now()+delay;if(e.status===429){state.paused=Date.now()+Math.max(30000,Number.isFinite(e.retry)?e.retry:300000);state.next=state.paused;message('TDX 限流，已暫停至 '+new Date(state.paused).toLocaleTimeString('zh-TW')+'。保留上次資料；不代表當日額度必然用完。','warn')}else if([400,401,403].includes(e.status)){state.next=Infinity;message('TDX 拒絕請求（'+e.status+'）。請確認金鑰、服務權限及查詢條件，再手動重試。','error')}else{message((e.status?'TDX 回覆 '+e.status+'，請確認該來源可用。':e.message||'網路連線失敗。')+' 保留上次資料，稍後重試。','error')}paint();}
- finally{if(version===state.version){state.busy=false;$('refresh').disabled=false}}
+ finally{if(version===state.version){state.busy=false;$('refresh').disabled=false;autoTick();const wanted=state.mode==='Freeway'?'Freeway:all':state.mode+':'+state.scope;if(state.failures===0&&state.autoOn&&positionValid()&&(!state.autoIndex||state.autoIndexKey!==wanted))setTimeout(()=>load(),0)}}
 }
+function autoStatus(){
+ $('auto').setAttribute('aria-pressed',state.autoOn);$('auto').textContent='自動選路：'+(state.autoOn?'開':'關');
+ $('autoStatus').textContent=!state.autoOn?'自動選路已關閉；可手動選路，定位仍可使用。':state.watch===null?'自動選路已開啟，等待開啟定位。':!positionValid()?'等待有效定位；不使用過期或低精度位置選路。':!state.credentials?'定位已就緒，請先輸入 TDX 金鑰。':state.autoText||'正在取得道路設備資料…';
+}
+function lockAuto(){state.autoOn=false;state.autoCandidate=null;state.autoText='';storage.set('auto','0');autoStatus()}
+function autoTick(){
+ if(!state.autoOn||!positionValid()){state.autoCandidate=null;autoStatus();return}
+ const key=state.mode==='Freeway'?'Freeway:all':state.mode+':'+state.scope;
+ if(state.autoIndexKey!==key||!state.autoIndex){state.autoText='等待道路設備索引…';autoStatus();return}
+ const pick=chooseAuto(state.autoIndex,state.here,state.mode);
+ if(!pick.road){state.autoCandidate=null;state.autoText=pick.reason;autoStatus();return}
+ const id=pick.road+'|'+pick.dir,now=state.here.time;let c=state.autoCandidate;
+ if(!c||c.id!==id){c={id,start:now,last:now,count:1};state.autoCandidate=c}else if(now>c.last){c.last=now;c.count++}
+ if(c.count<2||now-c.start<4000){state.autoText='正在確認附近道路，請等待連續定位…';autoStatus();return}
+ state.autoText='依附近設備推估：'+(FW.find(f=>f[0]===pick.road)?.[1]||pick.road)+(pick.dir?'／'+(DIR[pick.dir]||pick.dir):'；方向待確認，請移動後再判定或手動選擇。');
+ if(state.busy){autoStatus();return}
+ const changed=state.mode==='Freeway'?state.scope!==pick.road:state.road!==pick.road;
+ if(changed&&state.mode==='Freeway'){state.scope=pick.road;reset();return}
+ if(changed){state.road=pick.road;state.dir='';state.point='';state.follow=true;state.lastEvent='';filters()}
+ if(state.dir!==pick.dir){state.dir=pick.dir;state.point='';state.follow=true;state.lastEvent='';filters()}
+ autoStatus();paint();
+}
+$('auto').onclick=()=>{state.autoOn=!state.autoOn;state.autoCandidate=null;state.autoText='';state.follow=true;storage.set('auto',state.autoOn?'1':'0');if(state.autoOn){if(state.watch===null)$('geo').onclick();autoTick();if(state.credentials)load()}paint()};
 function reset(){stop();state.points=[];state.point='';state.road='';state.dir='';state.follow=true;state.lastEvent='';state.next=0;setup();filters();paint();load()}
-document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{state.demo=false;state.mode=b.dataset.mode;state.scope=state.mode==='Freeway'?'N5':state.mode==='City'?'Taipei':'all';reset()});
-$('scope').onchange=()=>{state.demo=false;state.scope=$('scope').value;reset()};$('road').onchange=()=>{state.road=$('road').value;state.dir='';state.point='';state.follow=true;state.lastEvent='';filters();paint()};$('direction').onchange=()=>{state.dir=$('direction').value;state.point='';state.follow=true;state.lastEvent='';paint()};$('point').onchange=()=>{state.point=$('point').value;state.follow=false;paint()};$('refresh').onclick=()=>load();
+document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{state.autoCandidate=null;state.autoIndex=null;state.mode=b.dataset.mode;state.scope=state.mode==='Freeway'?'N5':state.mode==='City'?'Taipei':'all';reset()});
+$('scope').onchange=()=>{lockAuto();state.scope=$('scope').value;reset()};$('road').onchange=()=>{lockAuto();state.road=$('road').value;state.dir='';state.point='';state.follow=true;state.lastEvent='';filters();paint()};$('direction').onchange=()=>{lockAuto();state.dir=$('direction').value;state.point='';state.follow=true;state.lastEvent='';paint()};$('point').onchange=()=>{lockAuto();state.point=$('point').value;state.follow=false;paint()};$('refresh').onclick=()=>load();
 $('settings').onclick=()=>{$('cid').value=state.credentials?.id||'';$('secret').value=state.credentials?.secret||'';$('remember').checked=!!storage.get('credentials');$('cfg').showModal()};$('cancel').onclick=()=>{$('cfg').close();$('secret').value=''};
-$('save').onclick=()=>{const id=$('cid').value.trim(),secret=$('secret').value.trim();if(!id||!secret){$('secret').setCustomValidity('請填寫 Client ID 與 Secret');$('secret').reportValidity();return}$('secret').setCustomValidity('');stop();state.credentials={id,secret};state.token='';storage.remove('credentials');let saved=true;if($('remember').checked)saved=storage.set('credentials',JSON.stringify(state.credentials));$('secret').value='';$('cfg').close();if(state.demo){state.points=[];state.point='';state.dir='';state.road='';state.demo=false;filters();paint()}state.next=0;load();if(!saved)message('瀏覽器無法儲存金鑰，本次仍可使用。','warn')};$('secret').oninput=()=>{$('secret').setCustomValidity('')};
+$('save').onclick=()=>{const id=$('cid').value.trim(),secret=$('secret').value.trim();if(!id||!secret){$('secret').setCustomValidity('請填寫 Client ID 與 Secret');$('secret').reportValidity();return}$('secret').setCustomValidity('');stop();state.credentials={id,secret};state.token='';storage.remove('credentials');let saved=true;if($('remember').checked)saved=storage.set('credentials',JSON.stringify(state.credentials));$('secret').value='';$('cfg').close();state.next=0;load();if(!saved)message('瀏覽器無法儲存金鑰，本次仍可使用。','warn')};$('secret').oninput=()=>{$('secret').setCustomValidity('')};
 $('forget').onclick=()=>{stop();storage.remove('credentials');state.credentials=null;state.token='';state.next=Infinity;$('cid').value='';$('secret').value='';$('remember').checked=false;message('已清除本版儲存與記憶體中的金鑰。舊版如有儲存，需在原網頁清除網站資料。')};
 $('drive').onclick=()=>{const on=document.body.classList.toggle('drive');$('drive').setAttribute('aria-pressed',on);$('drive').textContent=on?'完整模式':'簡潔模式'};
-$('geo').onclick=()=>{if(state.watch!==null){navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;state.geoError='';$('geo').textContent='開啟定位';$('geo').setAttribute('aria-pressed','false');paint();return}if(!navigator.geolocation||!window.isSecureContext){message('定位需要瀏覽器支援與安全來源（通常為 HTTPS）。仍可手動選觀測點。','warn');return}state.follow=true;state.geoError='';state.watch=navigator.geolocation.watchPosition(pos=>{state.here={lat:pos.coords.latitude,lon:pos.coords.longitude,accuracy:pos.coords.accuracy,time:pos.timestamp};state.geoError='';paint()},e=>{state.geoError=e.code===1?'定位權限被拒絕；可手動選點':'定位中斷；不依舊座標追蹤';paint()},{enableHighAccuracy:true,timeout:10000,maximumAge:5000});$('geo').textContent='關閉定位';$('geo').setAttribute('aria-pressed','true');paint()};
+$('geo').onclick=()=>{if(state.watch!==null){navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;state.geoError='';$('geo').textContent='開啟定位';$('geo').setAttribute('aria-pressed','false');paint();return}if(!navigator.geolocation||!window.isSecureContext){message('定位需要瀏覽器支援與安全來源（通常為 HTTPS）。仍可手動選觀測點。','warn');return}state.follow=true;state.geoError='';state.watch=navigator.geolocation.watchPosition(pos=>{const prev=state.here;state.here={lat:pos.coords.latitude,lon:pos.coords.longitude,accuracy:pos.coords.accuracy,time:pos.timestamp,heading:null};const speed=number(pos.coords.speed),heading=number(pos.coords.heading);if(speed!==null&&speed>2.5&&heading!==null)state.here.heading=heading;else if(prev&&pos.timestamp-prev.time>0&&pos.timestamp-prev.time<30000&&distance(prev,state.here)*1000>Math.max(40,prev.accuracy+state.here.accuracy))state.here.heading=travelBearing(prev,state.here);state.geoError='';autoTick();if(state.autoOn&&!state.busy&&!state.autoIndex&&state.credentials)load();paint()},e=>{state.geoError=e.code===1?'定位權限被拒絕；可手動選點':'定位中斷；不依舊座標追蹤';paint()},{enableHighAccuracy:true,timeout:10000,maximumAge:5000});$('geo').textContent='關閉定位';$('geo').setAttribute('aria-pressed','true');paint()};
 $('voice').onclick=()=>{if(!('speechSynthesis'in window)){message('此瀏覽器不支援語音。','warn');return}state.voice=!state.voice;$('voice').setAttribute('aria-pressed',state.voice);speak(state.voice?'路況語音已開啟。僅提示所選道路附近的低速觀測，不提供換道建議。':'語音已關閉')};
-function demo(){stop();state.demo=true;state.mode='Freeway';state.scope='N5';state.dir='S';state.interval=60;const statics=[],lives=[];for(let i=0;i<4;i++){const id='DEMO-N5-S-'+(28+i*1.5).toFixed(3)+'-M-01',link='demo-'+i;statics.push({VDID:id,RoadName:'國道5號',LocationMile:(28+i*1.5)+'K',DetectionType:1,RoadClass:0,DetectionLinks:[{LinkID:link,RoadDirection:'S'}]});lives.push({VDID:id,Status:0,DataCollectTime:new Date(Date.now()-(i===3?600000:20000)).toISOString(),LinkFlows:[{LinkID:link,Lanes:[{LaneID:0,LaneType:1,Speed:[82,48,0,90][i],Vehicles:[{VehicleType:'S',Volume:24}]},{LaneID:1,LaneType:1,Speed:[76,52,12,87][i],Vehicles:[{VehicleType:'S',Volume:22},{VehicleType:'L',Volume:4}]}]}]})}state.points=normalize(statics,lives,60,Date.now());state.next=Infinity;setup();filters();paint();message('示範模式：所有速度、里程與設備皆為虛構測試資料，不是真實路況。切換道路來源或儲存金鑰可回到即時模式。','warn');$('retrieved').textContent='示範資料 · 非 TDX 即時回應'}
-$('demo').onclick=demo;
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){paint();if(Date.now()>=state.next)load()}else{window.speechSynthesis?.cancel()}});
 window.addEventListener('pagehide',()=>{state.controller?.abort();if(state.watch!==null)navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;window.speechSynthesis?.cancel()});
-setInterval(()=>{if(document.visibilityState!=='visible')return;paint();if(!state.demo&&Date.now()>=state.next)load()},10000);
+setInterval(()=>{if(document.visibilityState!=='visible')return;paint();if(Date.now()>=state.next)load()},10000);
 try{const c=JSON.parse(storage.get('credentials')||'null');if(c&&typeof c.id==='string'&&typeof c.secret==='string')state.credentials=c}catch{storage.remove('credentials')}
 setup();paint();if(state.credentials)load();
 }
 </script>
 </body>
 </html>
+
 
 
