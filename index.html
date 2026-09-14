@@ -34,7 +34,7 @@ button,input,select{font:inherit}button,select,input{min-height:46px;border:1px 
   <div class="grid"><div class="metric">設備資料蒐集時間<strong id="collected">—</strong></div><div class="metric">最後成功查詢 TDX<strong id="lastQuery">—</strong></div><div class="metric">定位狀態<strong id="location">未開啟；可手動選觀測點</strong></div></div>
  </section>
  <details><summary>其他觀測點 <span id="count" class="muted small"></span></summary><p class="muted small">列表依里程排列，不代表已確認位於車輛前方。點選設備查看單點資料。</p><div class="tablewrap"><table><thead><tr><th>設備／位置</th><th>觀測車速</th><th>資料狀態</th><th>查看</th></tr></thead><tbody id="rows"></tbody></table></div></details>
- <footer class="foot">資料來源：交通部 TDX 車輛偵測器（VD）。數字為過去統計區間的觀測，不是車輛即時速度或未來路況預測。行駛中請勿操作。<br>本頁不判定您所在車道，不據此建議換道。定位座標只在本頁記憶體使用，不傳送至 TDX。<br><span id="retrieved">尚未取得資料</span> · <a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener noreferrer">TDX 平臺</a></footer>
+ <footer class="foot">版本 2026.09.14-04 · 資料來源：交通部 TDX 車輛偵測器（VD）。數字為過去統計區間的觀測，不是車輛即時速度或未來路況預測。行駛中請勿操作。<br>本頁不判定您所在車道，不據此建議換道。定位座標只在本頁記憶體使用，不傳送至 TDX。<br><span id="retrieved">尚未取得資料</span> · <a href="https://tdx.transportdata.tw/" target="_blank" rel="noopener noreferrer">TDX 平臺</a></footer>
 </main>
 <dialog id="cfg" aria-labelledby="cfgTitle"><h2 id="cfgTitle">連接 TDX</h2><p class="small muted">輸入您自己的 API 金鑰。預設僅於本次頁面使用；重整後需重新輸入。</p><label>Client ID<input id="cid" autocomplete="off" spellcheck="false"></label><label>Client Secret<input id="secret" type="password" autocomplete="off" spellcheck="false"></label><label class="check"><input id="remember" type="checkbox">記住於此瀏覽器（非加密儲存）</label><p class="small muted">只在自己的裝置勾選。金鑰只傳送至 TDX 認證端點；公開多人部署應改由後端保管。</p><div class="actions"><button id="cancel">取消</button><button id="save" class="primary">儲存並讀取</button></div><button id="forget" class="danger" style="width:100%;margin-top:12px">清除已存金鑰</button></dialog>
 <script>
@@ -90,7 +90,7 @@ function chooseAuto(items,here,mode){
 const storage={get(k){try{return localStorage.getItem(NS+k)}catch{return null}},set(k,v){try{localStorage.setItem(NS+k,v);return true}catch{return false}},remove(k){try{localStorage.removeItem(NS+k)}catch{}}};
 // Pure functions above are also exercised by the offline regression checks.
 if(typeof document!=='undefined'){
-const $=id=>document.getElementById(id),state={mode:'Freeway',scope:'N5',road:'',dir:'',point:'',points:[],interval:60,received:0,version:0,controller:null,busy:false,paused:0,next:0,failures:0,token:'',expiry:0,credentials:null,autoOn:storage.get('auto')==='1',autoCandidate:null,autoIndex:null,autoIndexKey:'',autoText:'',watch:null,here:null,geoError:'',voice:false,lastSpeech:0,lastEvent:'',follow:true};
+const $=id=>document.getElementById(id),state={mode:'Freeway',scope:'N5',road:'',dir:'',point:'',points:[],interval:60,received:0,version:0,controller:null,busy:false,paused:0,next:0,failures:0,token:'',expiry:0,credentials:null,autoOn:storage.get('auto')==='1',autoCandidate:null,autoIndex:null,autoIndexKey:'',indexController:null,indexNext:0,indexError:'',autoText:'',watch:null,here:null,geoError:'',voice:false,lastSpeech:0,lastEvent:'',follow:true};
 const cache=new Map();
 function element(tag,text,cls){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e}
 function message(text,kind=''){const e=$('message');e.textContent=text;e.className='banner'+(kind?' '+kind:'')}
@@ -123,34 +123,45 @@ function paths(snapshot,live=false){let path=(live?'/Live/VD/':'/VD/')+(snapshot
 async function request(url,opts,signal){const controller=new AbortController(),abort=()=>controller.abort();signal.addEventListener('abort',abort,{once:true});if(signal.aborted)controller.abort();const timer=setTimeout(()=>controller.abort(),18000);try{const r=await fetch(url,{...opts,cache:'no-store',signal:controller.signal});if(!r.ok){const e=new Error('HTTP '+r.status);e.status=r.status;const retry=r.headers.get('Retry-After');e.retry=retry?(Number.isFinite(Number(retry))?Number(retry)*1000:Math.max(0,Date.parse(retry)-Date.now())):null;throw e}return await r.json()}catch(e){if(e.name==='AbortError'&&!signal.aborted)throw new Error('請求逾時，請稍後重試。');throw e}finally{clearTimeout(timer);signal.removeEventListener('abort',abort)}}
 async function token(signal){if(state.token&&Date.now()<state.expiry-30000)return state.token;if(!state.credentials)throw new Error('請先設定 TDX 金鑰。');const c=state.credentials,j=await request(AUTH,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:c.id,client_secret:c.secret})},signal);if(typeof j.access_token!=='string'||!j.access_token)throw new Error('認證回應缺少 token。');state.token=j.access_token;state.expiry=Date.now()+(number(j.expires_in)??300)*1000;return state.token}
 async function api(url,signal){for(let attempt=0;attempt<2;attempt++){const tk=await token(signal);try{return await request(url,{headers:{Authorization:'Bearer '+tk,Accept:'application/json'}},signal)}catch(e){if(e.status===401&&attempt===0){state.token='';continue}throw e}}}
-function stop(){state.version++;state.controller?.abort();state.busy=false;$('refresh').disabled=false}
+function stop(){state.version++;state.controller?.abort();state.indexController?.abort();state.indexController=null;state.busy=false;$('refresh').disabled=false}
 async function load(){
  if(state.busy)return;if(Date.now()<state.paused){message('來源要求暫停，'+new Date(state.paused).toLocaleTimeString('zh-TW')+' 後可重試。','warn');return}if(!state.credentials){message('請先按「TDX 設定」輸入金鑰。');return}
  const version=++state.version,snapshot={mode:state.mode,scope:state.scope},key=snapshot.mode+':'+snapshot.scope,controller=new AbortController();state.controller=controller;state.busy=true;$('refresh').disabled=true;message('正在取得 '+routeText()+' 的路況…');
+ let stage=routeText()+'設備資料';
  try{
- if(state.autoOn&&positionValid()){
-  const indexKey=snapshot.mode==='Freeway'?'Freeway:all':key;
-  let index=cache.get(indexKey);
-  if(snapshot.mode==='Freeway'&&(!index||Date.now()-index.time>86400000)){
-   index={time:Date.now(),items:envelope(await api(BASE+'/VD/Freeway?$format=JSON',controller.signal),'VDs').items};
-   if(version!==state.version)return;cache.set(indexKey,index);
-  }
-  if(index){state.autoIndex=index.items;state.autoIndexKey=indexKey}
- }
- let c=cache.get(key);if(!c||Date.now()-c.time>86400000){const env=envelope(await api(paths(snapshot),controller.signal),'VDs');c={time:Date.now(),items:env.items};if(version!==state.version)return;cache.set(key,c)}if(snapshot.mode!=='Freeway'){state.autoIndex=c.items;state.autoIndexKey=key}const env=envelope(await api(paths(snapshot,true),controller.signal),'VDLives');if(version!==state.version)return;state.interval=env.interval>0?env.interval:(snapshot.mode==='Freeway'?60:300);const previous=state.points;state.points=keepNewest(previous,normalize(c.items,env.items,state.interval,Date.now()).filter(p=>snapshot.mode!=='Freeway'||p.route===snapshot.scope));state.received=Date.now();$('lastQuery').textContent=new Date(state.received).toLocaleString('zh-TW',{hour12:false})+'（不等於設備資料時間）';state.failures=0;state.next=Date.now()+state.interval*1000;filters();paint();$('retrieved').textContent='最後取得 '+new Date(state.received).toLocaleTimeString('zh-TW')+' · 更新間隔 '+state.interval+' 秒';const chosen=state.points.find(p=>p.key===state.point);const before=previous.find(p=>p.key===state.point);const q=chosen?quality(chosen):null;const at=chosen?.time?new Date(chosen.time).toLocaleString('zh-TW',{hour12:false}):'未知';
+ let c=cache.get(key);if(!c||Date.now()-c.time>86400000){const env=envelope(await api(paths(snapshot),controller.signal),'VDs');c={time:Date.now(),items:env.items};if(version!==state.version)return;cache.set(key,c)}if(snapshot.mode!=='Freeway'){state.autoIndex=c.items;state.autoIndexKey=key}stage=routeText()+'即時路況';const env=envelope(await api(paths(snapshot,true),controller.signal),'VDLives');if(version!==state.version)return;state.interval=env.interval>0?env.interval:(snapshot.mode==='Freeway'?60:300);const previous=state.points;state.points=keepNewest(previous,normalize(c.items,env.items,state.interval,Date.now()).filter(p=>snapshot.mode!=='Freeway'||p.route===snapshot.scope));state.received=Date.now();$('lastQuery').textContent=new Date(state.received).toLocaleString('zh-TW',{hour12:false})+'（不等於設備資料時間）';state.failures=0;state.next=Date.now()+state.interval*1000;filters();paint();$('retrieved').textContent='最後取得 '+new Date(state.received).toLocaleTimeString('zh-TW')+' · 更新間隔 '+state.interval+' 秒';const chosen=state.points.find(p=>p.key===state.point);const before=previous.find(p=>p.key===state.point);const q=chosen?quality(chosen):null;const at=chosen?.time?new Date(chosen.time).toLocaleString('zh-TW',{hour12:false}):'未知';
  message(!state.points.length?'來源沒有可對應的設備／路段資料。':!chosen?'已重新查詢 TDX，請選道路與方向查看資料時間。':chosen.heldOlder?'本次 TDX 回傳的設備時間較舊，已保留先前較新的觀測（'+at+'）。':!q.ok?'已重新查詢 TDX，但所選設備仍為「'+q.text+'」。設備資料時間：'+at+'；按鈕只能重新取得回應，不能使設備產生新觀測。':before?.time===chosen.time?'已重新查詢 TDX；所選設備尚無新一筆觀測，資料時間仍為 '+at+'。':'已取得所選設備的觀測，資料時間：'+at+'。',!state.points.length||q&&!q.ok?'warn':'');}
- catch(e){if(version!==state.version||controller.signal.aborted)return;state.failures++;const delay=Math.min(900000,30000*2**Math.min(state.failures,5));state.next=Date.now()+delay;if(e.status===429){state.paused=Date.now()+Math.max(30000,Number.isFinite(e.retry)?e.retry:300000);state.next=state.paused;message('TDX 限流，已暫停至 '+new Date(state.paused).toLocaleTimeString('zh-TW')+'。保留上次資料；不代表當日額度必然用完。','warn')}else if([400,401,403].includes(e.status)){state.next=Infinity;message('TDX 拒絕請求（'+e.status+'）。請確認金鑰、服務權限及查詢條件，再手動重試。','error')}else{message((e.status?'TDX 回覆 '+e.status+'，請確認該來源可用。':e.message||'網路連線失敗。')+' 保留上次資料，稍後重試。','error')}paint();}
- finally{if(version===state.version){state.busy=false;$('refresh').disabled=false;autoTick();const wanted=state.mode==='Freeway'?'Freeway:all':state.mode+':'+state.scope;if(state.failures===0&&state.autoOn&&positionValid()&&(!state.autoIndex||state.autoIndexKey!==wanted))setTimeout(()=>load(),0)}}
+ catch(e){if(version!==state.version||controller.signal.aborted)return;state.failures++;const delay=Math.min(900000,30000*2**Math.min(state.failures,5));state.next=Date.now()+delay;if(e.status===429){state.paused=Date.now()+Math.max(30000,Number.isFinite(e.retry)?e.retry:300000);state.next=state.paused;message('TDX 限流，已暫停至 '+new Date(state.paused).toLocaleTimeString('zh-TW')+'。保留上次資料；不代表當日額度必然用完。','warn')}else if([400,401,403].includes(e.status)){state.next=Infinity;message('TDX 拒絕請求（'+e.status+'）。請確認金鑰、服務權限及查詢條件，再手動重試。','error')}else{message(stage+'讀取失敗：'+(e.status?'TDX 回覆 '+e.status+'，請確認該來源可用。':e.message||'網路連線失敗。')+(state.points.length?' 保留上次資料，稍後重試。':' 目前尚未取得資料；請稍後重試。'),'error')}paint();}
+ finally{if(version===state.version){state.busy=false;$('refresh').disabled=false;autoTick();if(state.failures===0)ensureIndex()}}
+}
+async function ensureIndex(){
+ if(!state.autoOn||!positionValid()||!state.credentials||state.mode!=='Freeway'||state.busy||state.indexController)return;
+ const now=Date.now(),key='Freeway:all';let saved=cache.get(key);
+ if(!saved){try{const stored=JSON.parse(storage.get('freeway-index-v1')||'null');if(stored&&Array.isArray(stored.items)&&stored.items.length&&typeof stored.time==='number'&&now-stored.time<86400000&&stored.time<=now)saved=stored}catch{}}
+ if(saved&&now-saved.time<86400000){cache.set(key,saved);state.autoIndex=saved.items;state.autoIndexKey=key;state.indexError='';autoTick();return}
+ if(now<state.indexNext||now<state.paused)return;
+ const controller=new AbortController();state.indexController=controller;state.indexError='';autoTick();
+ try{
+  const params=new URLSearchParams({'$format':'JSON','$select':'VDID,PositionLat,PositionLon,DetectionLinks,DetectionType,RoadClass'});
+  const env=envelope(await api(BASE+'/VD/Freeway?'+params,controller.signal),'VDs');
+  if(controller.signal.aborted)return;
+  if(!env.items.length)throw new Error('索引沒有設備資料');
+  const index={time:Date.now(),items:env.items};cache.set(key,index);storage.set('freeway-index-v1',JSON.stringify(index));
+  state.autoIndex=index.items;state.autoIndexKey=key;state.indexNext=0;
+ }catch(e){if(controller.signal.aborted)return;state.indexNext=Date.now()+300000;
+  state.indexError='自動選路資料暫時無法取得（'+(e.status?'TDX '+e.status:e.message||'網路錯誤')+'），五分鐘後再試；手動路況仍可使用。';
+  if(e.status===429){state.paused=Date.now()+Math.max(30000,Number.isFinite(e.retry)?e.retry:300000);state.indexNext=state.paused;state.next=Math.max(state.next,state.paused);state.indexError='TDX 限流，自動選路暫停至 '+new Date(state.paused).toLocaleTimeString('zh-TW')+'；已取得的路況仍可查看。'}
+ }finally{if(state.indexController===controller){state.indexController=null;autoTick()}}
 }
 function autoStatus(){
  $('auto').setAttribute('aria-pressed',state.autoOn);$('auto').textContent='自動選路：'+(state.autoOn?'開':'關');
  $('autoStatus').textContent=!state.autoOn?'自動選路已關閉；可手動選路，定位仍可使用。':state.watch===null?'自動選路已開啟，等待開啟定位。':!positionValid()?'等待有效定位；不使用過期或低精度位置選路。':!state.credentials?'定位已就緒，請先輸入 TDX 金鑰。':state.autoText||'正在取得道路設備資料…';
 }
-function lockAuto(){state.autoOn=false;state.autoCandidate=null;state.autoText='';storage.set('auto','0');autoStatus()}
+function lockAuto(){state.indexController?.abort();state.indexController=null;state.autoOn=false;state.autoCandidate=null;state.autoText='';storage.set('auto','0');autoStatus()}
 function autoTick(){
  if(!state.autoOn||!positionValid()){state.autoCandidate=null;autoStatus();return}
  const key=state.mode==='Freeway'?'Freeway:all':state.mode+':'+state.scope;
- if(state.autoIndexKey!==key||!state.autoIndex){state.autoText='等待道路設備索引…';autoStatus();return}
+ if(state.autoIndexKey!==key||!state.autoIndex){state.autoText=state.indexError||(state.indexController?'正在背景下載自動選路資料；可先手動選方向查看路況。':'等待自動選路資料；不影響手動查詢。');autoStatus();return}
  const pick=chooseAuto(state.autoIndex,state.here,state.mode);
  if(!pick.road){state.autoCandidate=null;state.autoText=pick.reason;autoStatus();return}
  const id=pick.road+'|'+pick.dir,now=state.here.time;let c=state.autoCandidate;
@@ -172,10 +183,10 @@ $('settings').onclick=()=>{$('cid').value=state.credentials?.id||'';$('secret').
 $('save').onclick=()=>{const id=$('cid').value.trim(),secret=$('secret').value.trim();if(!id||!secret){$('secret').setCustomValidity('請填寫 Client ID 與 Secret');$('secret').reportValidity();return}$('secret').setCustomValidity('');stop();state.credentials={id,secret};state.token='';storage.remove('credentials');let saved=true;if($('remember').checked)saved=storage.set('credentials',JSON.stringify(state.credentials));$('secret').value='';$('cfg').close();state.next=0;load();if(!saved)message('瀏覽器無法儲存金鑰，本次仍可使用。','warn')};$('secret').oninput=()=>{$('secret').setCustomValidity('')};
 $('forget').onclick=()=>{stop();storage.remove('credentials');state.credentials=null;state.token='';state.next=Infinity;$('cid').value='';$('secret').value='';$('remember').checked=false;message('已清除本版儲存與記憶體中的金鑰。舊版如有儲存，需在原網頁清除網站資料。')};
 $('drive').onclick=()=>{const on=document.body.classList.toggle('drive');$('drive').setAttribute('aria-pressed',on);$('drive').textContent=on?'完整模式':'簡潔模式'};
-$('geo').onclick=()=>{if(state.watch!==null){navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;state.geoError='';$('geo').textContent='開啟定位';$('geo').setAttribute('aria-pressed','false');paint();return}if(!navigator.geolocation||!window.isSecureContext){message('定位需要瀏覽器支援與安全來源（通常為 HTTPS）。仍可手動選觀測點。','warn');return}state.follow=true;state.geoError='';state.watch=navigator.geolocation.watchPosition(pos=>{const prev=state.here;state.here={lat:pos.coords.latitude,lon:pos.coords.longitude,accuracy:pos.coords.accuracy,time:pos.timestamp,heading:null};const speed=number(pos.coords.speed),heading=number(pos.coords.heading);if(speed!==null&&speed>2.5&&heading!==null)state.here.heading=heading;else if(prev&&pos.timestamp-prev.time>0&&pos.timestamp-prev.time<30000&&distance(prev,state.here)*1000>Math.max(40,prev.accuracy+state.here.accuracy))state.here.heading=travelBearing(prev,state.here);state.geoError='';autoTick();if(state.autoOn&&!state.busy&&!state.autoIndex&&state.credentials)load();paint()},e=>{state.geoError=e.code===1?'定位權限被拒絕；可手動選點':'定位中斷；不依舊座標追蹤';paint()},{enableHighAccuracy:true,timeout:10000,maximumAge:5000});$('geo').textContent='關閉定位';$('geo').setAttribute('aria-pressed','true');paint()};
+$('geo').onclick=()=>{if(state.watch!==null){navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;state.geoError='';$('geo').textContent='開啟定位';$('geo').setAttribute('aria-pressed','false');paint();return}if(!navigator.geolocation||!window.isSecureContext){message('定位需要瀏覽器支援與安全來源（通常為 HTTPS）。仍可手動選觀測點。','warn');return}state.follow=true;state.geoError='';state.watch=navigator.geolocation.watchPosition(pos=>{const prev=state.here;state.here={lat:pos.coords.latitude,lon:pos.coords.longitude,accuracy:pos.coords.accuracy,time:pos.timestamp,heading:null};const speed=number(pos.coords.speed),heading=number(pos.coords.heading);if(speed!==null&&speed>2.5&&heading!==null)state.here.heading=heading;else if(prev&&pos.timestamp-prev.time>0&&pos.timestamp-prev.time<30000&&distance(prev,state.here)*1000>Math.max(40,prev.accuracy+state.here.accuracy))state.here.heading=travelBearing(prev,state.here);state.geoError='';autoTick();if(state.autoOn&&state.credentials){if(state.received)ensureIndex();else if(Date.now()>=state.next)load()}paint()},e=>{state.geoError=e.code===1?'定位權限被拒絕；可手動選點':'定位中斷；不依舊座標追蹤';paint()},{enableHighAccuracy:true,timeout:10000,maximumAge:5000});$('geo').textContent='關閉定位';$('geo').setAttribute('aria-pressed','true');paint()};
 $('voice').onclick=()=>{if(!('speechSynthesis'in window)){message('此瀏覽器不支援語音。','warn');return}state.voice=!state.voice;$('voice').setAttribute('aria-pressed',state.voice);speak(state.voice?'路況語音已開啟。僅提示所選道路附近的低速觀測，不提供換道建議。':'語音已關閉')};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){paint();if(Date.now()>=state.next)load()}else{window.speechSynthesis?.cancel()}});
-window.addEventListener('pagehide',()=>{state.controller?.abort();if(state.watch!==null)navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;window.speechSynthesis?.cancel()});
+window.addEventListener('pagehide',()=>{state.controller?.abort();state.indexController?.abort();if(state.watch!==null)navigator.geolocation.clearWatch(state.watch);state.watch=null;state.here=null;window.speechSynthesis?.cancel()});
 setInterval(()=>{if(document.visibilityState!=='visible')return;paint();if(Date.now()>=state.next)load()},10000);
 try{const c=JSON.parse(storage.get('credentials')||'null');if(c&&typeof c.id==='string'&&typeof c.secret==='string')state.credentials=c}catch{storage.remove('credentials')}
 setup();paint();if(state.credentials)load();
@@ -183,6 +194,7 @@ setup();paint();if(state.credentials)load();
 </script>
 </body>
 </html>
+
 
 
 
